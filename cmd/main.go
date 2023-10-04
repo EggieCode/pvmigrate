@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"k8s.io/apimachinery/pkg/labels"
 	"log"
 	"os"
 	"os/signal"
@@ -32,11 +33,13 @@ func main() {
 	var podReadyTimeout int
 	var deletePVTimeout int
 	var rsyncFlags string
+	var pvcLabelSelector string
 	flag.StringVar(&options.SourceSCName, "source-sc", "", "storage provider name to migrate from")
 	flag.StringVar(&options.DestSCName, "dest-sc", "", "storage provider name to migrate to")
 	flag.StringVar(&options.RsyncImage, "rsync-image", "eeacms/rsync:2.3", "the image to use to copy PVCs - must have 'rsync' on the path")
 	flag.StringVar(&rsyncFlags, "rsync-flags", "", "additional flags to pass to rsync command")
 	flag.StringVar(&options.Namespace, "namespace", "", "only migrate PVCs within this namespace")
+	flag.StringVar(&pvcLabelSelector, "pvc-label-selector", "", "only migrate with labels in selector")
 	flag.BoolVar(&options.SetDefaults, "set-defaults", false, "change default storage class from source to dest")
 	flag.BoolVar(&options.VerboseCopy, "verbose-copy", false, "show output from the rsync command used to copy data between PVCs")
 	flag.BoolVar(&options.SkipSourceValidation, "skip-source-validation", false, "migrate from PVCs using a particular StorageClass name, even if that StorageClass does not exist")
@@ -72,6 +75,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Validate PVC Label Selector
+	options.PvcLabelSelector, err = labels.Parse(pvcLabelSelector)
+	if err != nil {
+		if err != nil {
+			logger.Printf("migration failed: %s", err)
+			os.Exit(1)
+		}
+	}
+
 	if !skipPreflightValidation {
 		failures, err := preflight.Validate(ctx, logger, clientset, options)
 		if err != nil {
@@ -93,4 +105,5 @@ func main() {
 			os.Exit(1)
 		}
 	}
+
 }

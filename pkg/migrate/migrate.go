@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"k8s.io/apimachinery/pkg/labels"
 	"log"
 	"strconv"
 	"text/tabwriter"
@@ -51,6 +52,7 @@ type Options struct {
 	SkipSourceValidation bool
 	PodReadyTimeout      time.Duration
 	DeletePVTimeout      time.Duration
+	PvcLabelSelector     labels.Selector
 }
 
 // Migrate moves data and PVCs from one StorageClass to another
@@ -60,7 +62,7 @@ func Migrate(ctx context.Context, w *log.Logger, clientset k8sclient.Interface, 
 		return err
 	}
 
-	matchingPVCs, namespaces, err := getPVCs(ctx, w, clientset, options.SourceSCName, options.DestSCName, options.Namespace)
+	matchingPVCs, namespaces, err := getPVCs(ctx, w, clientset, options.SourceSCName, options.DestSCName, options.Namespace, options.PvcLabelSelector)
 	if err != nil {
 		return err
 	}
@@ -419,7 +421,7 @@ func createMigrationPod(ctx context.Context, clientset k8sclient.Interface, ns s
 // a map of namespaces to arrays of original PVCs
 // an array of namespaces that the PVCs were found within
 // an error, if one was encountered
-func getPVCs(ctx context.Context, w *log.Logger, clientset k8sclient.Interface, sourceSCName, destSCName string, Namespace string) (map[string][]pvcCtx, []string, error) {
+func getPVCs(ctx context.Context, w *log.Logger, clientset k8sclient.Interface, sourceSCName, destSCName, namespace string, pvcLabelSelector labels.Selector) (map[string][]pvcCtx, []string, error) {
 	// get PVs using the specified storage provider
 	pvs, err := clientset.CoreV1().PersistentVolumes().List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -446,11 +448,16 @@ func getPVCs(ctx context.Context, w *log.Logger, clientset k8sclient.Interface, 
 				return nil, nil, fmt.Errorf("failed to get PVC for PV %s in %s: %w", pv.Spec.ClaimRef.Name, pv.Spec.ClaimRef.Namespace, err)
 			}
 			pvcInfo.claim = pvc
-
-			if pv.Spec.ClaimRef.Namespace == Namespace || Namespace == "" {
-				matchingPVCs[pv.Spec.ClaimRef.Namespace] = append(matchingPVCs[pv.Spec.ClaimRef.Namespace], pvcInfo)
+			if pv.Spec.ClaimRef.Namespace != namespace && namespace != "" {
+				continue
 			}
 
+			if pvcLabelSelector != nil && !pvcLabelSelector.Empty() && !pvcLabelSelector.Matches(labels.Set(pvc.Labels)) {
+				w.Printf("PVC %s does not match the PVC label selector %s\n", pvc.Name, pvcLabelSelector.String())
+				continue
+			}
+
+			matchingPVCs[pv.Spec.ClaimRef.Namespace] = append(matchingPVCs[pv.Spec.ClaimRef.Namespace], pvcInfo)
 		} else {
 			return nil, nil, fmt.Errorf("PV %s does not have an associated PVC - resolve this before rerunning", pv.Name)
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"k8s.io/apimachinery/pkg/labels"
 	"log"
 	"text/tabwriter"
 	"time"
@@ -51,7 +52,7 @@ func Validate(ctx context.Context, w *log.Logger, clientset k8sclient.Interface,
 	}
 
 	// validate access modes for all PVCs using the source storage class
-	pvcs, err := pvcsForStorageClass(ctx, w, clientset, options.SourceSCName, options.Namespace)
+	pvcs, err := pvcsForStorageClass(ctx, w, clientset, options.SourceSCName, options.Namespace, options.PvcLabelSelector)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get PVCs for storage %s: %w", options.SourceSCName, err)
 	}
@@ -378,7 +379,7 @@ func getPVCError(client k8sclient.Interface, pvc *corev1.PersistentVolumeClaim) 
 
 // pvcsForStorageClass returns all PersistentVolumeClaims, filtered by namespace, for a given
 // storage class
-func pvcsForStorageClass(ctx context.Context, l *log.Logger, client k8sclient.Interface, srcSC, namespace string) (map[string]corev1.PersistentVolumeClaim, error) {
+func pvcsForStorageClass(ctx context.Context, l *log.Logger, client k8sclient.Interface, srcSC, namespace string, pvcLabelSelector labels.Selector) (map[string]corev1.PersistentVolumeClaim, error) {
 	srcPVs, err := k8sutil.PVsByStorageClass(ctx, client, srcSC)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get PVs for storage class %s: %w", srcSC, err)
@@ -392,9 +393,14 @@ func pvcsForStorageClass(ctx context.Context, l *log.Logger, client k8sclient.In
 			if err != nil {
 				return nil, fmt.Errorf("failed to get PVC for PV %s in %s: %w", pv.Spec.ClaimRef.Name, pv.Spec.ClaimRef.Namespace, err)
 			}
-			if pv.Spec.ClaimRef.Namespace == namespace || namespace == "" {
-				srcPVCs[pv.Spec.ClaimRef.Name] = *pvc.DeepCopy()
+			if pv.Spec.ClaimRef.Namespace != namespace && namespace != "" {
+				continue
 			}
+			if pvcLabelSelector != nil && !pvcLabelSelector.Empty() && !pvcLabelSelector.Matches(labels.Set(pvc.Labels)) {
+				fmt.Printf("PVC %s does not match the PVC label selector %s\n", pvc.Name, pvcLabelSelector.String())
+				continue
+			}
+			srcPVCs[pv.Spec.ClaimRef.Name] = *pvc.DeepCopy()
 		} else {
 			return nil, fmt.Errorf("PV %s does not have an associated PVC", pv.Name)
 		}
